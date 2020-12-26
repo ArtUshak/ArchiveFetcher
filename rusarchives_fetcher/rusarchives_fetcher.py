@@ -36,6 +36,7 @@ def strip_advanced(s: str) -> str:
 
 
 def get_number_str(x: Optional[int]) -> str:
+    """Get string from number or empty string if number is `None`."""
     if x is None:
         return ''
     return str(x)
@@ -649,45 +650,89 @@ class Inventory:
         else:
             return str(self.number)
 
-    def get_page_text(self) -> str:
+    def get_item_page_text(
+        self, item_number: Optional[int], heading_level: int
+    ) -> str:
+        """Return page wikitext for item in inventory."""
+        heading_str = '=' * heading_level
+        item = self.items[item_number]
+        return (
+            heading_str + ' Единица хранения ' + item.get_number_str() + ' '
+            + heading_str + '\n\n' + (item.get_page_text() or '')
+        )
+
+    def get_page_text(self, heading_level: int) -> str:
         """Return page wikitext for item."""
+        heading_str = '=' * heading_level
         return (
             '{{Опись|archive=' + (self.parent.parent.title or '') + '|fund='
             + self.parent.get_number_str() + '|inventory='
-            + self.get_number_str() + '}}\n\n'
-            + '== Единицы хранения ==\n\n'
+            + self.get_number_str() + '|annotation='
+            + (self.annotation or '') + ' }}\n\n'
+            + heading_str + ' Единицы хранения ' + heading_str + '\n\n'
             + '\n\n'.join(list(map(
-                lambda item:
-                '=== Единица хранения ' + item.get_number_str() + ' ===\n\n'
-                + (item.get_page_text() or ''),
-                self.items.values()
+                lambda item_number:
+                self.get_item_page_text(item_number, heading_level + 1),
+                self.items.keys()
             ))) + '\n'
         )
 
 
 @dataclasses.dataclass
 class InventoryLink:
-    """Optional Inventory."""
+    """Link to inventory, it may be stored in file and fetched."""
 
-    inventory: Optional[Inventory]
+    parent: 'Fund'
+    number: Optional[int]
+    loaded_inventory: Optional[Inventory]
 
-    def is_ok(self) -> bool:
-        return self.inventory is not None
+    @property
+    def base_directory_path(self) -> Optional[pathlib.Path]:
+        return self.parent.base_directory_path
+
+    @property
+    def inventory(self) -> Inventory:
+        if self.loaded_inventory is not None:
+            return self.loaded_inventory
+
+        if self.base_directory_path is None:
+            raise ValueError()
+        inventory_file_path = self.base_directory_path.joinpath(
+            'archive' + self.parent.parent.get_title_hash()
+        ).joinpath(
+            'fund' + self.parent.get_number_str()
+        ).joinpath(
+            'inventory' + self.get_number_str() + '.json'
+        )
+        with open(inventory_file_path, 'rt') as inventory_file:
+            data = json.load(inventory_file)
+        self.loaded_inventory = Inventory.from_json_dict(self.parent, data)
+
+        return self.loaded_inventory
 
     def get_number_str(self) -> str:
-        if self.inventory is None:
-            raise ValueError()
-        return self.inventory.get_number_str()
-
-    def get_full_json_dict(self) -> Any:
-        if self.inventory is None:
-            return None
-        return self.inventory.get_full_json_dict()
+        """Return string representation of number."""
+        if self.number is None:
+            return ''
+        else:
+            return str(self.number)
 
     def append(self, item: Item) -> None:
-        if self.inventory is None:
-            raise ValueError()
+        """Add item."""
         return self.inventory.append(item)
+
+    def get_json_dict(self) -> Any:
+        return self.inventory.get_json_dict()
+
+    def get_full_json_dict(self) -> Any:
+        return self.inventory.get_full_json_dict()
+
+    def get_page_text(self, heading_level: int) -> str:
+        return self.inventory.get_page_text(heading_level)
+
+    @property
+    def items(self) -> Dict[Optional[int], Item]:
+        return self.inventory.items
 
 
 @dataclasses.dataclass
@@ -699,12 +744,20 @@ class Fund:
     inventories: Dict[Optional[int], InventoryLink]
     annotation: Optional[str]
 
+    @property
+    def base_directory_path(self) -> Optional[pathlib.Path]:
+        return self.parent.base_directory_path
+
     def append(self, item: Item) -> None:
         """Add item."""
         if item.inventory_number not in self.inventories:
-            self.inventories[item.inventory_number] = InventoryLink(Inventory(
-                self, item.inventory_number, {}, item.inventory_annotation
-            ))
+            self.inventories[item.inventory_number] = InventoryLink(
+                self,
+                item.inventory_number,
+                Inventory(
+                    self, item.inventory_number, {}, item.inventory_annotation
+                )
+            )
         inventory = self.inventories[item.inventory_number]
         if inventory is not None:
             inventory.append(item)
@@ -744,10 +797,18 @@ class Fund:
             parent, data['number'], {}, data['annotation']
         )
         for inventory_number_str, inventory in data['inventories'].items():
+            inventory_number: Optional[int]
+            if inventory_number_str:
+                inventory_number = int(inventory_number_str)
+            else:
+                inventory_number = None
             if inventory is None:
-                result.inventories[inventory_number_str] = InventoryLink(None)
+                result.inventories[inventory_number_str] = InventoryLink(
+                    result, inventory_number, None
+                )
             else:
                 result.inventories[inventory_number_str] = InventoryLink(
+                    result, inventory_number,
                     Inventory.from_json_dict(result, inventory)
                 )
         return result
@@ -759,17 +820,44 @@ class Fund:
         else:
             return str(self.number)
 
-    def get_page_text(self) -> str:
-        """Return page wikitext for fund."""
-        return (
-            '{{Фонд|archive=' + (self.parent.title or '') + '|fund='
-            + self.get_number_str() + '}}\n\n'
-            + '== Описи ==\n\n'
-            + '\n'.join(list(map(
-                lambda inventory_number:
+    def get_inventory_link_page_text(
+        self, inventory_number: Optional[int], separate: bool,
+        heading_level: int
+    ) -> str:
+        """Return page wikitext for inventory in fund."""
+        if separate:
+            return (
                 '* {{СсылкаНаОпись|archive=' + (self.parent.title or '')
                 + '|fund=' + self.get_number_str() + '|inventory='
-                + get_number_str(inventory_number) + '}}',
+                + get_number_str(inventory_number) + '}}'
+            )
+        else:
+            heading_str = '=' * heading_level
+            inventory_title: str
+            if inventory_number is None:
+                inventory_title = 'Неизвестная опись'
+            else:
+                inventory_title = 'Опись ' + str(inventory_number)
+            return (
+                heading_str + ' ' + inventory_title + ' ' + heading_str
+                + '\n\n' + self.inventories[inventory_number].get_page_text(
+                    heading_level + 1
+                )
+            )
+
+    def get_page_text(self, separate: bool, heading_level: int) -> str:
+        """Return page wikitext for fund."""
+        heading_str = '=' * heading_level
+        return (
+            '{{Фонд|archive=' + (self.parent.title or '') + '|fund='
+            + self.get_number_str() + '|annotation='
+            + (self.annotation or '') + '}}\n\n'
+            + heading_str + ' Описи ' + heading_str + '\n\n'
+            + '\n'.join(list(map(
+                lambda inventory_number:
+                self.get_inventory_link_page_text(
+                    inventory_number, separate, heading_level + 1
+                ),
                 self.inventories.keys()
             )))
             + '\n'
@@ -778,32 +866,56 @@ class Fund:
 
 @dataclasses.dataclass
 class FundLink:
-    """Optional Fund."""
+    """Link to fund, it may be stored in file and fetched."""
 
-    fund: Optional[Fund]
+    parent: 'Archive'
+    number: Optional[int]
+    loaded_fund: Optional[Fund]
 
-    def is_ok(self) -> bool:
-        return self.fund is not None
+    @property
+    def base_directory_path(self) -> Optional[pathlib.Path]:
+        return self.parent.base_directory_path
+
+    @property
+    def fund(self) -> Fund:
+        if self.loaded_fund is not None:
+            return self.loaded_fund
+
+        if self.base_directory_path is None:
+            raise ValueError()
+        fund_file_path = self.base_directory_path.joinpath(
+            'archive' + self.parent.get_title_hash()
+        ).joinpath(
+            'fund' + self.get_number_str()
+        ).joinpath(
+            'list.json'
+        )
+        with open(fund_file_path, 'rt') as fund_file:
+            data = json.load(fund_file)
+        self.loaded_fund = Fund.from_json_dict(self.parent, data)
+
+        return self.loaded_fund
 
     def get_number_str(self) -> str:
-        if self.fund is None:
-            raise ValueError()
-        return self.fund.get_number_str()
+        if self.number is None:
+            return ''
+        return str(self.number)
 
     def append(self, item: Item) -> None:
-        if self.fund is None:
-            raise ValueError()
+        """Add item."""
         return self.fund.append(item)
 
     def get_full_json_dict(self) -> Any:
-        if self.fund is None:
-            return None
         return self.fund.get_full_json_dict()
+
+    def get_json_dict(self) -> Any:
+        return self.fund.get_json_dict()
+
+    def get_page_text(self, separate: bool, heading_level: int) -> str:
+        return self.fund.get_page_text(separate, heading_level)
 
     @property
     def inventories(self) -> Dict[Optional[int], InventoryLink]:
-        if self.fund is None:
-            raise ValueError()
         return self.fund.inventories
 
 
@@ -815,12 +927,19 @@ class Archive:
     title: Optional[str]
     funds: Dict[Optional[int], FundLink]
 
+    @property
+    def base_directory_path(self) -> Optional[pathlib.Path]:
+        return self.parent.base_directory_path
+
     def append(self, item: Item) -> None:
         """Add item."""
         if item.fund_number not in self.funds:
-            self.funds[item.fund_number] = FundLink(Fund(
-                self, item.fund_number, {}, item.fund_annotation
-            ))
+            self.funds[item.fund_number] = FundLink(
+                self, item.fund_number,
+                Fund(
+                    self, item.fund_number, {}, item.fund_annotation
+                )
+            )
         self.funds[item.fund_number].append(item)
 
     def get_title_str(self) -> str:
@@ -848,13 +967,23 @@ class Archive:
         }
 
     @staticmethod
-    def from_json_dict(parent: 'ArchiveList', data: Any) -> 'Archive':
+    def from_json_dict(
+        parent: 'ArchiveList', data: Any
+    ) -> 'Archive':
         result = Archive(parent, data['title'], {})
         for fund_number_str, fund in data['funds'].items():
-            if fund is None:
-                result.funds[fund_number_str] = FundLink(None)
+            fund_number: Optional[int]
+            if fund_number_str:
+                fund_number = int(fund_number_str)
             else:
-                result.funds[fund_number_str] = FundLink(
+                fund_number = None
+            if fund is None:
+                result.funds[fund_number] = FundLink(
+                    result, fund_number, None
+                )
+            else:
+                result.funds[fund_number] = FundLink(
+                    result, fund_number,
                     Fund.from_json_dict(result, fund)
                 )
         return result
@@ -865,15 +994,40 @@ class Archive:
             'title': self.title
         }
 
-    def get_page_text(self) -> str:
+    def get_fund_link_page_text(
+        self, fund_number: Optional[int], separate: bool, heading_level: int
+    ) -> str:
+        """Return page wikitext for fund in archive."""
+        if separate:
+            return (
+                '* {{СсылкаНаФонд|archive=' + self.get_title_str()
+                + '|fund=' + get_number_str(fund_number) + '}}'
+            )
+        else:
+            heading_str = '=' * heading_level
+            fund_title: str
+            if fund_number is None:
+                fund_title = 'Неизвестный фонд'
+            else:
+                fund_title = 'Фонд ' + str(fund_number)
+            return (
+                heading_str + ' ' + fund_title + ' ' + heading_str + '\n\n'
+                + self.funds[fund_number].get_page_text(
+                    separate, heading_level + 1
+                )
+            )
+
+    def get_page_text(self, separate: bool, heading_level: int) -> str:
         """Return page wikitext for archive."""
+        heading_str = '=' * heading_level
         return (
             '{{Архив|archive=' + (self.title or '') + '}}\n\n'
-            + '== Фонды ==\n\n'
+            + heading_str + ' Фонды ' + heading_str + '\n\n'
             + '\n'.join(list(map(
                 lambda fund_number:
-                '* {{СсылкаНаФонд|archive=' + self.get_title_str()
-                + '|fund=' + get_number_str(fund_number) + '}}',
+                self.get_fund_link_page_text(
+                    fund_number, separate, heading_level + 1
+                ),
                 self.funds.keys()
             )))
             + '\n'
@@ -881,16 +1035,78 @@ class Archive:
 
 
 @dataclasses.dataclass
+class ArchiveLink:
+    """Link to archive, it may be stored in file and fetched."""
+
+    parent: 'ArchiveList'
+    title: Optional[str]
+    loaded_archive: Optional[Archive]
+
+    @property
+    def base_directory_path(self) -> Optional[pathlib.Path]:
+        return self.parent.base_directory_path
+
+    @property
+    def archive(self) -> Archive:
+        if self.loaded_archive is not None:
+            return self.loaded_archive
+
+        if self.base_directory_path is None:
+            raise ValueError()
+        archive_file_path = self.base_directory_path.joinpath(
+            'archive' + self.get_title_hash()
+        ).joinpath(
+            'list.json'
+        )
+        with open(archive_file_path, 'rt') as archive_file:
+            data = json.load(archive_file)
+        self.loaded_archive = Archive.from_json_dict(self.parent, data)
+
+        return self.loaded_archive
+
+    def get_title_str(self) -> str:
+        """Return title string or empty string."""
+        return self.title or ''
+
+    def get_title_hash(self) -> str:
+        """Get SHA3-256 hash of title as hex string."""
+        return hashlib.sha3_256(
+            self.get_title_str().encode('utf8')
+        ).hexdigest()
+
+    def append(self, item: Item) -> None:
+        """Add item."""
+        return self.archive.append(item)
+
+    def get_full_json_dict(self) -> Any:
+        return self.archive.get_full_json_dict()
+
+    def get_json_dict(self) -> Any:
+        return self.archive.get_json_dict()
+
+    def get_page_text(self, separate: bool, heading_level: int) -> str:
+        return self.archive.get_page_text(separate, heading_level)
+
+    @property
+    def funds(self) -> Dict[Optional[int], FundLink]:
+        return self.archive.funds
+
+
+@dataclasses.dataclass
 class ArchiveList:
     """Archives data."""
 
-    archives: Dict[Optional[str], Archive]
+    base_directory_path: Optional[pathlib.Path]
+    archives: Dict[Optional[str], ArchiveLink]
 
     def append(self, item: Item) -> None:
         """Add item."""
         if item.archive_title not in self.archives:
-            self.archives[item.archive_title] = Archive(
-                self, item.archive_title, {}
+            self.archives[item.archive_title] = ArchiveLink(
+                self, item.archive_title,
+                Archive(
+                    self, item.archive_title, {}
+                )
             )
         self.archives[item.archive_title].append(item)
 
@@ -899,12 +1115,35 @@ class ArchiveList:
         return list(self.archives)
 
     @staticmethod
-    def from_json_dict(data: Any) -> 'ArchiveList':
-        result = ArchiveList({})
-        result.archives = {
-            archive_title_str: Archive.from_json_dict(result, archive)
-            for archive_title_str, archive in data.items()
-        }
+    def from_json_dict(
+        data: Any, base_directory_path: pathlib.Path
+    ) -> 'ArchiveList':
+        result = ArchiveList(base_directory_path, {})
+        if isinstance(data, list):
+            result.archives = {
+                archive.title: archive
+                for archive in map(
+                    lambda archive_title_str:
+                    ArchiveLink(result, archive_title_str or None, None),
+                    data
+                )
+            }
+        else:
+            for archive_title_str, archive in data['archives'].items():
+                archive_title: Optional[str]
+                if archive_title_str:
+                    archive_title = archive_title_str
+                else:
+                    archive_title = None
+                if archive is None:
+                    result.archives[archive_title] = ArchiveLink(
+                        result, archive_title, None
+                    )
+                else:
+                    result.archives[archive_title] = ArchiveLink(
+                        result, archive_title,
+                        Archive.from_json_dict(result, archive)
+                    )
         return result
 
 
@@ -975,7 +1214,7 @@ def group_search_results(
     input_directory: str, output_directory: str
 ) -> None:
     """Group search results by archive name."""
-    archives = ArchiveList({})
+    archives = ArchiveList(None, {})
 
     input_files_length = len(os.listdir(input_directory))
     input_files = pathlib.Path(input_directory).iterdir()
@@ -1019,7 +1258,7 @@ def group_search_results(
             )
             with open(fund_list_file_path, 'wt') as fund_list_file:
                 json.dump(
-                    archive.get_full_json_dict(), fund_list_file,
+                    archive.get_json_dict(), fund_list_file,
                     ensure_ascii=False, indent=4, sort_keys=True
                 )
 
@@ -1040,7 +1279,7 @@ def group_search_results(
                     inventory_list_file_path, 'wt'
                 ) as inventory_list_file:
                     json.dump(
-                        fund.get_full_json_dict(), inventory_list_file,
+                        fund.get_json_dict(), inventory_list_file,
                         ensure_ascii=False, indent=4, sort_keys=True
                     )
                 for inventory in fund.inventories.values():
@@ -1052,56 +1291,17 @@ def group_search_results(
                     )
                     with open(output_file_path, 'wt') as output_file:
                         json.dump(
-                            inventory.get_full_json_dict(), output_file,
+                            inventory.get_json_dict(), output_file,
                             ensure_ascii=False, indent=4, sort_keys=True
                         )
 
 
 @click.command()
-@click.argument(
-    'input-file',
-    type=click.File(mode='rt')
+@click.option(
+    '--separate/--no-separate',
+    default=False,
+    help='Link to funds instead of embedding them'
 )
-@click.argument(
-    'output-file',
-    type=click.File(mode='wt')
-)
-def generate_inventory_page(
-    input_file: TextIO, output_file: TextIO
-) -> None:
-    archives = ArchiveList.from_json_dict(json.load(input_file))
-    inventory = list(
-        list(
-            list(archives.archives.values())[0].funds.values()
-        )[0].inventories.values()
-    )[0].inventory
-    if inventory is None:
-        raise ValueError()
-    output_file.write(inventory.get_page_text())
-
-
-@click.command()
-@click.argument(
-    'input-file',
-    type=click.File(mode='rt')
-)
-@click.argument(
-    'output-file',
-    type=click.File(mode='wt')
-)
-def generate_fund_page(
-    input_file: TextIO, output_file: TextIO
-) -> None:
-    archives = ArchiveList.from_json_dict(json.load(input_file))
-    fund = list(
-        list(archives.archives.values())[0].funds.values()
-    )[0].fund
-    if fund is None:
-        raise ValueError()
-    output_file.write(fund.get_page_text())
-
-
-@click.command()
 @click.argument(
     'input-file',
     type=click.File(mode='rt')
@@ -1111,11 +1311,12 @@ def generate_fund_page(
     type=click.File(mode='wt')
 )
 def generate_archive_page(
-    input_file: TextIO, output_file: TextIO
+    separate: bool, input_file: TextIO, output_file: TextIO
 ) -> None:
-    archives = ArchiveList.from_json_dict(json.load(input_file))
-    archive = list(archives.archives.values())[0]
-    output_file.write(archive.get_page_text())
+    """Generate wiki-page for archive and write it to file."""
+    archive_list = ArchiveList(pathlib.Path(input_file.name).parent.parent, {})
+    archive = Archive.from_json_dict(archive_list, json.load(input_file))
+    output_file.write(archive.get_page_text(separate, 2))
 
 
 @click.command()
@@ -1124,20 +1325,28 @@ def generate_archive_page(
     type=click.Path(exists=True, file_okay=False, dir_okay=True)
 )
 @click.argument(
+    'archive-name',
+    type=click.STRING
+)
+@click.argument(
     'output-directory',
     type=click.Path(exists=True, file_okay=False, dir_okay=True, writable=True)
 )
 def generate_archive_pages(
-    input_directory: str, output_directory: str
+    input_directory: str, archive_name: str, output_directory: str
 ) -> None:
     """Generate wiki-text pages for archive."""
     input_directory_path = pathlib.Path(input_directory)
     input_archive_file_path = input_directory_path.joinpath('list.json')
     with open(input_archive_file_path, 'rt') as input_archive_file:
         archives = ArchiveList.from_json_dict(
-            json.load(input_archive_file)
+            json.load(input_archive_file),
+            input_directory_path
         )
-    archive = list(archives.archives.values())[0]
+    if archive_name not in archives.archives:
+        click.echo(f'Archive {archive_name} not found', err=True)
+        return
+    archive = archives.archives[archive_name]
 
     output_directory_path = pathlib.Path(output_directory)
 
@@ -1145,34 +1354,17 @@ def generate_archive_pages(
         (archive.get_title_str() or 'Неизвестный архив') + '.txt'
     )
     with open(output_archive_file_path, 'wt') as output_archive_file:
-        output_archive_file.write(archive.get_page_text())
+        output_archive_file.write(archive.get_page_text(True, 2))
 
     output_archive_directory_path = output_directory_path.joinpath(
         archive.get_title_str() or 'Неизвестный архив'
     )
     output_archive_directory_path.mkdir()
 
-    input_files_length = len(os.listdir(input_directory))
     with click.progressbar(
-        input_directory_path.iterdir(), show_pos=True,
-        length=input_files_length
+        archive.funds.values(), show_pos=True
     ) as progress_bar:
-        for input_fund_directory_path in progress_bar:
-            if input_fund_directory_path.name == 'list.json':
-                continue
-
-            input_fund_file_path = input_fund_directory_path.joinpath(
-                'list.json'
-            )
-            with open(input_fund_file_path, 'rt') as input_fund_file:
-                archives = ArchiveList.from_json_dict(
-                    json.load(input_fund_file)
-                )
-            fund = list(
-                list(archives.archives.values())[0].funds.values()
-            )[0].fund
-            if fund is None:
-                raise ValueError()
+        for fund in progress_bar:
             page_title: str
             if fund.number is None:
                 page_title = 'Неизвестный фонд'
@@ -1182,45 +1374,7 @@ def generate_archive_pages(
                 page_title + '.txt'
             )
             with open(output_fund_file_path, 'wt') as output_fund_file:
-                output_fund_file.write(fund.get_page_text())
-
-            output_fund_directory_path = (
-                output_archive_directory_path.joinpath(
-                    page_title
-                )
-            )
-            output_fund_directory_path.mkdir()
-
-            for input_inventory_file_path in (
-                input_fund_directory_path.iterdir()
-            ):
-                if input_inventory_file_path.name == 'list.json':
-                    continue
-
-                with (
-                    open(input_inventory_file_path, 'rt')
-                ) as input_inventory_file:
-                    archives = ArchiveList.from_json_dict(
-                        json.load(input_inventory_file)
-                    )
-                inventory = list(list(
-                    list(archives.archives.values())[0].funds.values()
-                )[0].inventories.values())[0].inventory
-                if inventory is None:
-                    raise ValueError()
-                if inventory.number is None:
-                    page_title = 'Неизвестная опись'
-                else:
-                    page_title = 'Опись ' + str(inventory.number)
-                output_inventory_file_path = (
-                    output_fund_directory_path.joinpath(
-                        page_title + '.txt'
-                    )
-                )
-                with (
-                    open(output_inventory_file_path, 'wt')
-                ) as output_inventory_file:
-                    output_inventory_file.write(inventory.get_page_text())
+                output_fund_file.write(fund.get_page_text(False, 2))
 
 
 cli.add_command(list_organizations)
@@ -1228,8 +1382,6 @@ cli.add_command(fetch_organization_data)
 cli.add_command(list_search_results)
 cli.add_command(fetch_search_result)
 cli.add_command(group_search_results)
-cli.add_command(generate_inventory_page)
-cli.add_command(generate_fund_page)
 cli.add_command(generate_archive_page)
 cli.add_command(generate_archive_pages)
 
