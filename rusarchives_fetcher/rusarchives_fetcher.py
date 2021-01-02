@@ -44,8 +44,26 @@ def get_number_str(x: Optional[int]) -> str:
     return str(x)
 
 
-def get_str_number(s: str) -> Optional[int]:
-    """Get number from string or `None` on empty string."""
+def get_str_str(s: str) -> Optional[str]:
+    """Get string or `None` on empty or special string."""
+    if not s:
+        return None
+    if s == 'null':
+        return None
+    if s == '#VALUE!':
+        return None
+    return s
+
+
+def get_any_str(s: Any) -> Optional[str]:
+    """Get string or `None`."""
+    if not s:
+        return None
+    return str(s)
+
+
+def get_str_number(s: Optional[str]) -> Optional[int]:
+    """Get number from string or `None` on empty or special string."""
     if not s:
         return None
     if s == 'null':
@@ -53,6 +71,25 @@ def get_str_number(s: str) -> Optional[int]:
     if s == '#VALUE!':
         return None
     return int(s)
+
+
+def get_number_keys(s: Optional[str]) -> Tuple[int, str, int]:
+    """Get number from string or `None` on empty string."""
+    if not s:
+        return -1, '', -1
+    regex_result = re.match(r'(\d*)([^\d]*)(\d*)', s)
+    if not regex_result:
+        return 0, s, -1
+    part0 = regex_result.group(1)
+    part1 = regex_result.group(2)
+    part2 = regex_result.group(3)
+    if part0:
+        if part2:
+            return int(part0), part1, int(part2)
+        else:
+            return int(part0), part1, -1
+    else:
+        return 0, s, 0
 
 
 def request_get(
@@ -623,8 +660,8 @@ class FullItem:
 
     item: Item
     archive_title: Optional[str]
-    fund_number: Optional[int]
-    inventory_number: Optional[int]
+    fund_number: Optional[str]
+    inventory_number: Optional[str]
     fund_annotation: Optional[str]
     inventory_annotation: Optional[str]
 
@@ -634,7 +671,7 @@ class Inventory:
     """Inventory data with items."""
 
     parent: 'Fund'
-    number: Optional[int]
+    number: Optional[str]
     items: Dict[Optional[str], Item]
     annotation: Optional[str]
 
@@ -664,17 +701,15 @@ class Inventory:
     def from_json_dict(parent: 'Fund', data: Any) -> 'Inventory':
         """Create from data loaded from JSON."""
         result = Inventory(
-            parent, data['number'], {}, data['annotation']
+            parent, get_any_str(data['number']), {}, data['annotation']
         )
         for item_number_str, item in data['items'].items():
-            result.items[
-                item_number_str
-            ] = Item.from_json_dict(result, item)
+            result.items[item_number_str] = Item.from_json_dict(result, item)
         return result
 
     def get_number_str(self) -> str:
         """Return string representation of number."""
-        return get_number_str(self.number)
+        return self.number or ''
 
     def get_item_page_text(
         self, item_number: Optional[str], separate: bool, heading_level: int
@@ -711,7 +746,9 @@ class Inventory:
                 self.get_item_page_text(
                     item_number, separate, heading_level + 1
                 ),
-                sorted(self.items.keys(), key=lambda k: k or -1)
+                sorted(
+                    self.items.keys(), key=lambda k: get_number_keys(k)
+                )
             ))) + '\n'
         )
 
@@ -721,7 +758,7 @@ class InventoryLink:
     """Link to inventory, it may be stored in file and fetched."""
 
     parent: 'Fund'
-    number: Optional[int]
+    number: Optional[str]
     loaded_inventory: Optional[Inventory]
 
     @property
@@ -756,7 +793,7 @@ class InventoryLink:
 
     def get_number_str(self) -> str:
         """Return string representation of number."""
-        return get_number_str(self.number)
+        return self.number or ''
 
     @property
     def annotation(self) -> Optional[str]:
@@ -766,7 +803,7 @@ class InventoryLink:
     @annotation.setter
     def annotation(self, value: Optional[str]) -> None:
         """Inventory annotation."""
-        self.inventory.annotation = None
+        self.inventory.annotation = value
 
     def append(self, item: FullItem) -> None:
         """Add item."""
@@ -791,8 +828,8 @@ class Fund:
     """Fund data with inventories."""
 
     parent: 'Archive'
-    number: Optional[int]
-    inventories: Dict[Optional[int], InventoryLink]
+    number: Optional[str]
+    inventories: Dict[Optional[str], InventoryLink]
     annotation: Optional[str]
 
     @property
@@ -822,7 +859,7 @@ class Fund:
             'annotation': self.annotation,
             'inventories':
             {
-                get_number_str(inventory_number): None
+                (inventory_number or ''): None
                 for inventory_number in self.inventories
             }
         }
@@ -838,16 +875,16 @@ class Fund:
     def from_json_dict(parent: 'Archive', data: Any) -> 'Fund':
         """Create from data loaded from JSON."""
         result = Fund(
-            parent, data['number'], {}, data['annotation']
+            parent, get_any_str(data['number']), {}, data['annotation']
         )
         for inventory_number_str, inventory in data['inventories'].items():
-            inventory_number = get_str_number(inventory_number_str)
+            inventory_number = inventory_number_str or None
             if inventory is None:
-                result.inventories[inventory_number_str] = InventoryLink(
+                result.inventories[inventory_number] = InventoryLink(
                     result, inventory_number, None
                 )
             else:
-                result.inventories[inventory_number_str] = InventoryLink(
+                result.inventories[inventory_number] = InventoryLink(
                     result, inventory_number,
                     Inventory.from_json_dict(result, inventory)
                 )
@@ -855,10 +892,10 @@ class Fund:
 
     def get_number_str(self) -> str:
         """Return string representation of number."""
-        return get_number_str(self.number)
+        return self.number or ''
 
     def get_inventory_link_page_text(
-        self, inventory_number: Optional[int], separate: bool,
+        self, inventory_number: Optional[str], separate: bool,
         heading_level: int
     ) -> str:
         """Return page wikitext for inventory in fund."""
@@ -866,7 +903,7 @@ class Fund:
             return (
                 '{{СсылкаНаОпись|archive=' + self.parent.get_title_str()
                 + '|fund=' + self.get_number_str()
-                + '|inventory=' + get_number_str(inventory_number) + '}}'
+                + '|inventory=' + (inventory_number or '') + '}}'
             )
         else:
             heading_str = '=' * heading_level
@@ -896,7 +933,10 @@ class Fund:
                     self.get_inventory_link_page_text(
                         inventory_number, separate, heading_level + 1
                     ),
-                    sorted(self.inventories.keys(), key=lambda k: k or -1)
+                    sorted(
+                        self.inventories.keys(),
+                        key=lambda k: get_number_keys(k)
+                    )
                 )))
                 + '\n'
             )
@@ -910,7 +950,10 @@ class Fund:
                     self.get_inventory_link_page_text(
                         inventory_number, separate, heading_level
                     ),
-                    sorted(self.inventories.keys(), key=lambda k: k or -1)
+                    sorted(
+                        self.inventories.keys(),
+                        key=lambda k: get_number_keys(k)
+                    )
                 )))
                 + '\n'
             )
@@ -926,7 +969,7 @@ class FundLink:
     """Link to fund, it may be stored in file and fetched."""
 
     parent: 'Archive'
-    number: Optional[int]
+    number: Optional[str]
     loaded_fund: Optional[Fund]
 
     @property
@@ -961,7 +1004,7 @@ class FundLink:
 
     def get_number_str(self) -> str:
         """Return string representation of number."""
-        return get_number_str(self.number)
+        return self.number or ''
 
     @property
     def annotation(self) -> Optional[str]:
@@ -971,7 +1014,7 @@ class FundLink:
     @annotation.setter
     def annotation(self, value: Optional[str]) -> None:
         """Fund annotation."""
-        self.fund.annotation = None
+        self.fund.annotation = value
 
     def append(self, item: FullItem) -> None:
         """Add item."""
@@ -986,7 +1029,7 @@ class FundLink:
         return self.fund.get_page_text(separate, heading_level)
 
     @property
-    def inventories(self) -> Dict[Optional[int], InventoryLink]:
+    def inventories(self) -> Dict[Optional[str], InventoryLink]:
         """Fund items."""
         return self.fund.inventories
 
@@ -997,7 +1040,7 @@ class Archive:
 
     parent: 'ArchiveList'
     title: Optional[str]
-    funds: Dict[Optional[int], FundLink]
+    funds: Dict[Optional[str], FundLink]
 
     @property
     def base_directory_path(self) -> Optional[pathlib.Path]:
@@ -1033,7 +1076,7 @@ class Archive:
         return {
             'title': self.title,
             'funds':
-            {get_number_str(fund_number): None for fund_number in self.funds}
+            {(fund_number or ''): None for fund_number in self.funds}
         }
 
     @staticmethod
@@ -1043,7 +1086,7 @@ class Archive:
         """Create from data loaded from JSON."""
         result = Archive(parent, data['title'], {})
         for fund_number_str, fund in data['funds'].items():
-            fund_number = get_str_number(fund_number_str)
+            fund_number = fund_number_str or None
             if fund is None:
                 result.funds[fund_number] = FundLink(
                     result, fund_number, None
@@ -1062,13 +1105,13 @@ class Archive:
         }
 
     def get_fund_link_page_text(
-        self, fund_number: Optional[int], separate: bool, heading_level: int
+        self, fund_number: Optional[str], separate: bool, heading_level: int
     ) -> str:
         """Return page wikitext for fund in archive."""
         if separate:
             return (
                 '{{СсылкаНаФонд|archive=' + self.get_title_str()
-                + '|fund=' + get_number_str(fund_number) + '}}'
+                + '|fund=' + (fund_number or '') + '}}'
             )
         else:
             heading_str = '=' * heading_level
@@ -1095,7 +1138,9 @@ class Archive:
                 self.get_fund_link_page_text(
                     fund_number, separate, heading_level + 1
                 ),
-                sorted(self.funds.keys(), key=lambda k: k or -1)
+                sorted(
+                    self.funds.keys(), key=lambda k: get_number_keys(k)
+                )
             )))
             + '\n'
         )
@@ -1165,7 +1210,7 @@ class ArchiveLink:
         return self.archive.get_page_text(separate, heading_level)
 
     @property
-    def funds(self) -> Dict[Optional[int], FundLink]:
+    def funds(self) -> Dict[Optional[str], FundLink]:
         """Archive funds."""
         return self.archive.funds
 
@@ -1235,7 +1280,7 @@ class ArchiveList:
                 f'* [[{archive_title}]]',
                 sorted(
                     filter(bool, self.archives.keys()),
-                    key=lambda k: k or -1
+                    key=lambda k: get_number_keys(k)
                 )
             )))
             + '\n'
@@ -1252,8 +1297,8 @@ def get_search_result_fields(
 ) -> FullItem:
     """Return tuple of archive name, fund number and inventory number."""
     archive_title: Optional[str] = None
-    fund_number: Optional[int] = None
-    inventory_number: Optional[int] = None
+    fund_number: Optional[str] = None
+    inventory_number: Optional[str] = None
     item_number: Optional[str] = None
 
     fund_annotation: Optional[str] = None
@@ -1274,19 +1319,19 @@ def get_search_result_fields(
         if 'title' not in field:
             continue
         title = ''.join(field['title'])
-        regex_result_fund = re.match(r'Фонд №(| )(\d+)', title)
+        regex_result_fund = re.match(r'Фонд № ?([^\s]+)', title)
         if regex_result_fund:
-            fund_number = int(regex_result_fund.groups()[1])
+            fund_number = regex_result_fund.group(1)
             fund_annotation = process_annotation(content)
             continue
-        regex_result_inventory = re.match(r'Опись №(| )(\d+)', title)
+        regex_result_inventory = re.match(r'Опись № ?([^\s]+)', title)
         if regex_result_inventory:
-            inventory_number = int(regex_result_inventory.groups()[1])
+            inventory_number = regex_result_inventory.group(1)
             inventory_annotation = process_annotation(content)
             continue
-        regex_result_item = re.match(r'Единица №(| )(\d+)', title)
+        regex_result_item = re.match(r'Единица № ?([^\s]+)', title)
         if regex_result_item:
-            item_number = regex_result_item.groups()[1]
+            item_number = regex_result_item.group(1)
             item_annotation = process_annotation(content)
             continue
         if content is None:
@@ -1381,8 +1426,11 @@ def write_archives_files(
     'output-directory',
     type=click.Path(file_okay=False, dir_okay=True, writable=True)
 )
+@click.option(
+    '--save-url/--no-save-url', default=False
+)
 def group_search_results(
-    input_directory: str, output_directory: str
+    input_directory: str, output_directory: str, save_url: bool
 ) -> None:
     """Group search results by archive name."""
     archives = ArchiveList(None, {})
@@ -1402,9 +1450,13 @@ def group_search_results(
                 continue
             data_id = regex_result.group(1)
             data_kind = regex_result.group(2)
-            url = SEARCH_DETAILS_URL + '?' + urllib.parse.urlencode(
-                (('ID', data_id), ('Kind', data_kind))
-            )
+            url: Optional[str]
+            if save_url:
+                url = SEARCH_DETAILS_URL + '?' + urllib.parse.urlencode(
+                    (('ID', data_id), ('Kind', data_kind))
+                )
+            else:
+                url = None
             with open(input_file_path, 'rt') as input_file:
                 data = json.load(
                     input_file
@@ -1698,7 +1750,7 @@ def load_spreadsheet_results(
                 None, item_number, str(line[0]), [], get_str_number(line[1]),
                 get_str_number(line[2]), str(line[6])
             ),
-            archive_name, get_str_number(line[4]), get_str_number(line[3]),
+            archive_name, get_str_str(line[4]), get_str_str(line[3]),
             str(line[7]), None
         )
         archives.append(item)
