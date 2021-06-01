@@ -196,15 +196,27 @@ class Temple:
         )
 
         if r1.status != 200:
-            raise ValueError('Status code is {}'.format(r1.status))
+            click.echo(
+                'Status code for page {} is {}'.format(self.url, r1.status)
+            )
+            return
 
         html = await r1.text()
 
-        tables = soup_parse(html).cssselect(
+        tree = soup_parse(html)
+
+        title = tree.find('.//title').text
+        if title.strip() == 'Реестр храмов: объект не найден':
+            click.echo(
+                'Object for page {} is not found'
+            )
+            return
+
+        tables = tree.cssselect(
             '.center-block > table:nth-of-type(4) > tr > td > table'
         )
         if len(tables) == 0:
-            tables = soup_parse(html).cssselect(
+            tables = tree.cssselect(
                 '.center-block > table:nth-of-type(4) > tbody > tr > td > table'
             )
         rows = tables[0]
