@@ -208,7 +208,7 @@ class Temple:
         title = tree.find('.//title').text
         if title.strip() == 'Реестр храмов: объект не найден':
             click.echo(
-                'Object for page {} is not found'
+                'Object for page {} is not found'.format(self.url)
             )
             return
 
