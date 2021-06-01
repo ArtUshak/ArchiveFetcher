@@ -200,10 +200,14 @@ class Temple:
 
         html = await r1.text()
 
-        table = soup_parse(html).cssselect(
+        tables = soup_parse(html).cssselect(
             '.center-block > table:nth-of-type(4) > tr > td > table'
-        )[0]
-        rows = table
+        )
+        if len(tables) == 0:
+            tables = soup_parse(html).cssselect(
+                '.center-block > table:nth-of-type(4) > tbody > tr > td > table'
+            )
+        rows = tables[0]
         card_data: Dict[str, List[str]] = {}
         card_unparsed_field_names: Set[str] = set()
         for row in rows[1:]:
