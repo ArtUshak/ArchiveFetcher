@@ -3,6 +3,7 @@ import re
 import time
 from typing import Any, Dict, Iterator, Optional, Tuple
 
+import aiohttp
 import requests
 import requests_html
 from lxml.etree import Element
@@ -138,3 +139,37 @@ def iter_element_text_objects(element: Element) -> Iterator[str]:
             tail_str = strip_advanced(child.tail.strip())
             if tail_str:
                 yield tail_str
+
+
+def lxml_get_link_data(
+    link_element: Element
+) -> Optional[Tuple[str, str]]:
+    """Return tuple of hyperlink URL and text if element is hyperlink."""
+    try:
+        href = link_element.attrib['href'].strip()
+        if (
+            href and not (href.startswith('#'))
+            and not href.startswith(('javascript:', 'mailto:'))
+        ):
+            return href, link_element.text_content()
+        else:
+            return None
+    except KeyError:
+        return None
+
+
+async def aiohttp_get(
+    session: aiohttp.ClientSession, url: str,
+    params: Optional[Dict[str, Any]] = None
+) -> aiohttp.ClientResponse:
+    """Perform GET request and return HTTP response. Retry on error."""
+    for _ in range(MAX_TRY_NUM):
+        try:
+            response = await session.get(
+                url, params=params
+            )
+            time.sleep(SLEEP_TIME_DEFAULT)
+            return response
+        except aiohttp.ClientConnectionError:
+            time.sleep(SLEEP_TIME_DISCONNECTED)
+    raise ValueError('Max request try num exceeded')  # TODO

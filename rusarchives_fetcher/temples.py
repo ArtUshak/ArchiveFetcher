@@ -1,16 +1,19 @@
 """Script to fetch data from temples.ru."""
+import asyncio
 import dataclasses
 import json
 import re
 import sys
 import urllib.parse
-from typing import Dict, Iterator, List, Optional, Set, TextIO, Tuple, Union
+from typing import (AsyncIterator, Dict, List, Optional, Set,
+                    TextIO, Tuple, Union)
 
+import aiohttp
 import click
-import requests_html
 from lxml.etree import Element
+from lxml.html.soupparser import fromstring as soup_parse
 
-from utils import (get_link_data, iter_element_text_objects, request_get,
+from utils import (aiohttp_get, lxml_get_link_data, iter_element_text_objects,
                    strip_advanced)
 
 TEMPLES_ROOT_URL = 'http://www.temples.ru'
@@ -23,13 +26,27 @@ DictList1 = List[Dict[str, Union[str, DictList]]]
 DictList2 = List[Dict[str, Union[str, DictList1]]]
 
 
-def iterate_region_ids(
-    session: requests_html.HTMLSession
-) -> Iterator[Tuple[int, str]]:
-    """Iterate over region and IDs and names."""
+@dataclasses.dataclass
+class TempleCounter:
+    """Counter of fetched temples."""
+
+    display_interval: int
+    temple_count: int = 0
+
+    def increment(self) -> None:
+        """Increment count."""
+        self.temple_count += 1
+        if (self.temple_count % self.display_interval) == 0:
+            click.echo(f'Processed temples: {self.temple_count}')
+
+
+async def get_region_ids(
+    session: aiohttp.ClientSession
+) -> List[Tuple[int, str]]:
+    """Return list of region and IDs and names."""
     url = TEMPLES_TREE_URL
 
-    r1 = request_get(
+    r1 = await aiohttp_get(
         session,
         url,
         {
@@ -37,19 +54,25 @@ def iterate_region_ids(
         }
     )
 
-    if r1.status_code != 200:
-        raise ValueError('Status code is {}'.format(r1.status_code))
+    if r1.status != 200:
+        raise ValueError('Status code is {}'.format(r1.status))
 
-    links = r1.html.find('A.Locate')
+    html = await r1.text()
+
+    links = soup_parse(html).cssselect('a.Locate')
     if not isinstance(links, list):
         links = list(links)
+
+    result: List[Tuple[int, str]] = []
     for link in links:
-        link_data = get_link_data(link)
+        link_data = lxml_get_link_data(link)
         if link_data is None:
             continue
         link_url, link_title = link_data
         query = urllib.parse.parse_qs(urllib.parse.urlparse(link_url).query)
-        yield int(query['ID'][0]), link_title
+        result.append((int(query['ID'][0]), link_title))
+
+    return result
 
 
 TempleData = Dict[
@@ -162,23 +185,25 @@ class Temple:
             return None
         return (location_match.group(1), location_match.group(2))
 
-    def fetch_card(self, session: requests_html.HTMLSession) -> None:
+    async def fetch_card(self, session: aiohttp.ClientSession) -> None:
         """Fetch card data using URL."""
         if self.url is None:
             return
 
-        r1 = request_get(
+        r1 = await aiohttp_get(
             session,
             self.url
         )
 
-        if r1.status_code != 200:
-            raise ValueError('Status code is {}'.format(r1.status_code))
+        if r1.status != 200:
+            raise ValueError('Status code is {}'.format(r1.status))
 
-        table = r1.html.find(
+        html = await r1.text()
+
+        table = soup_parse(html).cssselect(
             '.center-block > table:nth-of-type(4) > tr > td > table'
         )[0]
-        rows = list(list(table.lxml)[0])
+        rows = table
         card_data: Dict[str, List[str]] = {}
         card_unparsed_field_names: Set[str] = set()
         for row in rows[1:]:
@@ -249,13 +274,13 @@ class Temple:
         self.card_unparsed_field_names = card_unparsed_field_names
 
 
-def iterate_temples(
-    region_id: int, session: requests_html.HTMLSession
-) -> Iterator[Temple]:
+async def iterate_temples(
+    region_id: int, session: aiohttp.ClientSession
+) -> AsyncIterator[Temple]:
     """Iterate over region temples."""
     url = TEMPLES_BRANCH_URL
 
-    r1 = request_get(
+    r1 = await aiohttp_get(
         session,
         url,
         {
@@ -263,12 +288,14 @@ def iterate_temples(
         }
     )
 
-    if r1.status_code != 200:
-        raise ValueError('Status code is {}'.format(r1.status_code))
+    if r1.status != 200:
+        raise ValueError('Status code is {}'.format(r1.status))
 
-    rows = r1.html.find('.center-block > table:last-of-type tr')
+    html = await r1.text()
+
+    rows = soup_parse(html).cssselect('.center-block > table:last-of-type tr')
     for row in rows[3:-3]:
-        cells = list(list(row.lxml)[0])
+        cells = row
         name = cells[1].text_content().strip()
         link = cells[1].find('a')
         url = link.get('href')
@@ -279,8 +306,53 @@ def iterate_temples(
         construction_date = cells[4].text_content().strip()
         temple_id = int(cells[7].text_content().strip(' []'))
         temple = Temple(temple_id, name, town, construction_date, url)
-        temple.fetch_card(session)
+        await temple.fetch_card(session)
         yield temple
+
+
+async def process_region(
+    region: Tuple[int, str], session: aiohttp.ClientSession,
+    counter: TempleCounter
+) -> Tuple[str, Dict[str, Union[str, int, List[TempleData]]]]:
+    """
+    Fetch region temples data asynchronously.
+
+    Return tuple of region name and data.
+    """
+    region_id, region_name = region
+    temples: List[TempleData] = []
+    async for temple in iterate_temples(region_id, session):
+        temples.append(temple.get_json_dict())
+        counter.increment()
+    return (
+        region_name, {
+            'name': region_name,
+            'id': region_id,
+            'temples': temples
+        }
+    )
+
+
+async def fetch_temples_data_internal(
+    start_region_index: int, end_region_index: int,
+    connection_limit: int, counter_display_interval: int
+) -> Dict[str, Dict[str, Union[str, int, List[TempleData]]]]:
+    """Fetch temples asynchronously."""
+    connector = aiohttp.connector.TCPConnector(limit=connection_limit)
+    counter = TempleCounter(counter_display_interval)
+
+    async with aiohttp.ClientSession(connector=connector) as session:
+        regions = list(await get_region_ids(session))
+        data: Dict[str, Dict[str, Union[str, int, List[TempleData]]]] = {}
+        for region_name, region_data in await asyncio.gather(
+            *map(
+                lambda region: process_region(region, session, counter),
+                regions[start_region_index:end_region_index]
+            )
+        ):
+            data[region_name] = region_data
+
+    return data
 
 
 @click.command()
@@ -296,28 +368,26 @@ def iterate_temples(
     '--end-region-index', type=click.IntRange(min=0),
     help='Region number to end with (exclusively)'
 )
+@click.option(
+    '--connection-limit', type=click.IntRange(min=1),
+    default=25,
+    help='Maximum simultaneous connection count'
+)
+@click.option(
+    '--counter-display-interval', type=click.IntRange(min=1),
+    default=5,
+    help='Interval to display temples counter (for example, each 10 temples)'
+)
 def fetch_temples_data(
     output_file: Optional[TextIO],
-    start_region_index: int, end_region_index: int
+    start_region_index: int, end_region_index: int,
+    connection_limit: int, counter_display_interval: int
 ) -> None:
-    """Get data about archive organization and write it to JSON file."""
-    session = requests_html.HTMLSession()
-
-    data: Dict[str, Dict[str, Union[str, int, List[TempleData]]]] = {}
-    with click.progressbar(iterate_region_ids(session), show_pos=True) as bar:
-        regions = list(bar)
-    for region_id, region_name in regions[start_region_index:end_region_index]:
-        with click.progressbar(
-            iterate_temples(region_id, session), show_pos=True
-        ) as bar1:
-            data[region_name] = {
-                'name': region_name,
-                'id': region_id,
-                'temples': list(map(
-                    lambda temple: temple.get_json_dict(),
-                    bar1
-                ))
-            }
+    """Get data about temples and write it to JSON file."""
+    data = asyncio.run(fetch_temples_data_internal(
+        start_region_index, end_region_index, connection_limit,
+        counter_display_interval
+    ))
 
     if output_file is None:
         output_file = sys.stdout

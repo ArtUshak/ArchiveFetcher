@@ -11,6 +11,7 @@ Click = "^7.1.2"
 requests-html = "^0.10.0"
 pyexcel = "^0.6.6"
 pyexcel-xlsx = "^0.6.0"
+aiohttp = {extras = ["speedups"], version = "^3.7.4"}
 
 [tool.poetry.dev-dependencies]
 flake8 = "^3.8.3"
