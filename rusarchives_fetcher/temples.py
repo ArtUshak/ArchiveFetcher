@@ -388,8 +388,11 @@ async def fetch_temples_data_internal(
     """Fetch temples asynchronously."""
     connector = aiohttp.connector.TCPConnector(limit=connection_limit)
     counter = TempleCounter(counter_display_interval)
+    timeout = aiohttp.ClientTimeout(total=None)
 
-    async with aiohttp.ClientSession(connector=connector) as session:
+    async with aiohttp.ClientSession(
+        connector=connector, timeout=timeout
+    ) as session:
         regions = list(await get_region_ids(session))
         data: Dict[str, Dict[str, Union[str, int, List[TempleData]]]] = {}
         for region_name, region_data in await asyncio.gather(
