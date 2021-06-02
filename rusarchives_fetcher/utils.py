@@ -123,7 +123,7 @@ def get_link_data(
         return None
 
 
-def iter_element_text_objects(element: Element) -> Iterator[str]:
+def lxml_iter_element_text_objects(element: Element) -> Iterator[str]:
     """
     Iterate over element texts as non-empty strings.
     """
@@ -133,7 +133,7 @@ def iter_element_text_objects(element: Element) -> Iterator[str]:
             yield text_str
 
     for child in element:
-        for child_str in iter_element_text_objects(child):
+        for child_str in lxml_iter_element_text_objects(child):
             yield child_str
         if child.tail:
             tail_str = strip_advanced(child.tail.strip())

@@ -5,16 +5,15 @@ import json
 import re
 import sys
 import urllib.parse
-from typing import (AsyncIterator, Dict, List, Optional, Set,
-                    TextIO, Tuple, Union)
+from typing import Awaitable, Dict, List, Optional, Set, TextIO, Tuple, Union
 
 import aiohttp
 import click
 from lxml.etree import Element
 from lxml.html.soupparser import fromstring as soup_parse
 
-from utils import (aiohttp_get, lxml_get_link_data, iter_element_text_objects,
-                   strip_advanced)
+from utils import (aiohttp_get, lxml_get_link_data,
+                   lxml_iter_element_text_objects, strip_advanced)
 
 TEMPLES_ROOT_URL = 'http://www.temples.ru'
 TEMPLES_TREE_URL = TEMPLES_ROOT_URL + '/tree.php'
@@ -123,6 +122,8 @@ class Temple:
     card_meta_update_date: Optional[str] = None
     card_meta_author: Optional[str] = None
     card_unparsed_field_names: Optional[Set[str]] = None
+    card_hierarchy_old: Optional[List[str]] = None
+    card_hierarchy_modern: Optional[List[str]] = None
 
     def get_json_dict(self) -> TempleData:
         """Get dictionary representation for JSON."""
@@ -185,7 +186,21 @@ class Temple:
             return None
         return (location_match.group(1), location_match.group(2))
 
-    async def fetch_card(self, session: aiohttp.ClientSession) -> None:
+    def parse_hierarchy(
+        self, element: Element
+    ) -> Optional[List[str]]:
+        """Parse hierarchy element and return list (except root element)."""
+        result = list(map(
+            lambda table: table.text_content().strip(),
+            element.cssselect('table')
+        ))
+        if not len(result):
+            return None
+        return result
+
+    async def fetch_card(
+        self, session: aiohttp.ClientSession, counter: TempleCounter
+    ) -> None:
         """Fetch card data using URL."""
         if self.url is None:
             return
@@ -199,6 +214,7 @@ class Temple:
             click.echo(
                 'Status code for page {} is {}'.format(self.url, r1.status)
             )
+            counter.increment()
             return
 
         html = await r1.text()
@@ -210,14 +226,24 @@ class Temple:
             click.echo(
                 'Object for page {} is not found'.format(self.url)
             )
+            counter.increment()
             return
+
+        hierarchies = tree.cssselect(
+            '.center-block > table:nth-of-type(1) > tr > td'
+        )
+        if len(hierarchies) >= 1:
+            self.card_hierarchy_modern = self.parse_hierarchy(hierarchies[0])
+        if len(hierarchies) >= 2:
+            self.card_hierarchy_old = self.parse_hierarchy(hierarchies[1])
 
         tables = tree.cssselect(
             '.center-block > table:nth-of-type(4) > tr > td > table'
         )
         if len(tables) == 0:
             tables = tree.cssselect(
-                '.center-block > table:nth-of-type(4) > tbody > tr > td > table'
+                '.center-block > table:nth-of-type(4) > tbody > tr > td >'
+                ' table'
             )
         rows = tables[0]
         card_data: Dict[str, List[str]] = {}
@@ -226,7 +252,7 @@ class Temple:
             cells = list(row)
             field_name = strip_advanced(cells[0].text_content().strip())
             field_element = cells[1]
-            field_texts = list(iter_element_text_objects(field_element))
+            field_texts = list(lxml_iter_element_text_objects(field_element))
             field_text = ' '.join(field_texts)
             card_data[field_name] = field_texts
             if field_name == 'Название':
@@ -288,12 +314,13 @@ class Temple:
 
         self.card_data = card_data
         self.card_unparsed_field_names = card_unparsed_field_names
+        counter.increment()
 
 
-async def iterate_temples(
-    region_id: int, session: aiohttp.ClientSession
-) -> AsyncIterator[Temple]:
-    """Iterate over region temples."""
+async def list_temples(
+    region_id: int, session: aiohttp.ClientSession, counter: TempleCounter
+) -> List[Temple]:
+    """Return list of over region temples."""
     url = TEMPLES_BRANCH_URL
 
     r1 = await aiohttp_get(
@@ -310,6 +337,9 @@ async def iterate_temples(
     html = await r1.text()
 
     rows = soup_parse(html).cssselect('.center-block > table:last-of-type tr')
+    awaitables: List[Awaitable[None]] = []
+    temples: List[Temple] = []
+
     for row in rows[3:-3]:
         cells = row
         name = cells[1].text_content().strip()
@@ -322,8 +352,11 @@ async def iterate_temples(
         construction_date = cells[4].text_content().strip()
         temple_id = int(cells[7].text_content().strip(' []'))
         temple = Temple(temple_id, name, town, construction_date, url)
-        await temple.fetch_card(session)
-        yield temple
+        temples.append(temple)
+        awaitables.append(temple.fetch_card(session, counter))
+
+    await asyncio.gather(*awaitables)
+    return temples
 
 
 async def process_region(
@@ -337,9 +370,8 @@ async def process_region(
     """
     region_id, region_name = region
     temples: List[TempleData] = []
-    async for temple in iterate_temples(region_id, session):
+    for temple in await list_temples(region_id, session, counter):
         temples.append(temple.get_json_dict())
-        counter.increment()
     return (
         region_name, {
             'name': region_name,
@@ -386,7 +418,7 @@ async def fetch_temples_data_internal(
 )
 @click.option(
     '--connection-limit', type=click.IntRange(min=1),
-    default=25,
+    default=20,
     help='Maximum simultaneous connection count'
 )
 @click.option(
