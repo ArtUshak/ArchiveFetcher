@@ -194,3 +194,33 @@ def generate_wiki_template_text(name: str, parameters: Dict[str, str]) -> str:
 def generate_wiki_redirect_text(redirect_name: str) -> str:
     """Generate wikitext for redirect."""
     return f'#REDIRECT [[{redirect_name}]]'
+
+
+def trunc_str_bytes(
+    src: str, trunc_at: int, om: str = '', encoding: str = 'utf-8'
+) -> str:
+    """
+    Truncate string to given maximum byte count.
+
+    Code was taken from
+    https://gist.github.com/komasaru/b25cbdf754971f920dd2f5743e950c7d
+    """
+    str_size, str_bytesize = len(src), len(src.encode(encoding))
+    om_size = (len(om.encode(encoding)) - len(om)) // 2 + len(om)
+    if str_size == str_bytesize:
+        if str_size <= trunc_at:
+            return src
+        else:
+            return src[:(trunc_at - om_size)] + om
+    if (str_bytesize - str_size) // 2 + str_size <= trunc_at:
+        return src
+    for i in range(str_size):
+        s = (len(src[:(i + 1)].encode(encoding)) - len(src[:(i + 1)])) // 2 \
+            + len(src[:(i + 1)])
+        if s < trunc_at - om_size:
+            continue
+        elif s == trunc_at - om_size:
+            return src[:(i + 1)] + om
+        else:
+            return src[:i] + om
+    return src

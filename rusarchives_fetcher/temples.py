@@ -1,6 +1,7 @@
 """Script to fetch data from temples.ru."""
 import asyncio
 import dataclasses
+import itertools
 import pathlib
 import re
 import urllib.parse
@@ -15,7 +16,7 @@ from lxml.html.soupparser import fromstring as soup_parse
 
 from utils import (aiohttp_get, generate_wiki_template_text,
                    lxml_get_link_data, lxml_iter_element_text_objects,
-                   strip_advanced)
+                   strip_advanced, trunc_str_bytes)
 
 TEMPLES_ROOT_URL = 'http://www.temples.ru'
 TEMPLES_TREE_URL = TEMPLES_ROOT_URL + '/tree.php'
@@ -528,7 +529,9 @@ class HierarchyIndex:
             return
         self._add_temple_recursive(temple, hierarchy)
 
-    def get_page_text(self, prefix: str, temple_prefix: str) -> str:
+    def get_page_text(
+        self, prefix: str, temple_prefix: str, truncated_suffix: str
+    ) -> str:
         """Return generated page wikitext for index."""
         template_parameters = {
             'old': str(int(self.is_old)),
@@ -546,13 +549,17 @@ class HierarchyIndex:
         if len(self.child_temples):
             result += '\n== Храмы ==\n\n' + '\n'.join(list(map(
                 lambda child_temple:
-                f'* [[{temple_prefix}{child_temple.get_name()}]]',
+                '* [[' + trunc_str_bytes(
+                    temple_prefix + child_temple.get_name(), 255,
+                    truncated_suffix
+                ) + ']]',
                 self.child_temples.values()
             ))) + '\n'
         return result
 
     def generate_hierarchy_pages(
-        self, prefix: str, temple_prefix: str, generate_temples: bool
+        self, prefix: str, temple_prefix: str, generate_temples: bool,
+        truncated_suffix: str
     ) -> Iterator[Tuple[str, str]]:
         """
         Iterate over tuple of page names and texts.
@@ -561,7 +568,7 @@ class HierarchyIndex:
         """
         yield (
             prefix + self.name,
-            self.get_page_text(prefix, temple_prefix)
+            self.get_page_text(prefix, temple_prefix, truncated_suffix)
         )
         new_prefix = prefix + self.name + '/'
         for temple in self.child_temples.values():
@@ -569,12 +576,15 @@ class HierarchyIndex:
                 page_text = temple.get_page_text()
                 if page_text is not None:
                     yield (
-                        temple_prefix + temple.get_name(),
+                        trunc_str_bytes(
+                            temple_prefix + temple.get_name(), 255,
+                            truncated_suffix
+                        ),
                         page_text
                     )
         for child_index in self.child_indices.values():
             for page_name, page_text in child_index.generate_hierarchy_pages(
-                new_prefix, temple_prefix, generate_temples
+                new_prefix, temple_prefix, generate_temples, truncated_suffix
             ):
                 yield page_name, page_text
 
@@ -702,8 +712,7 @@ def fetch_temples_data(
         counter_display_interval
     ))
 
-    json_str = orjson.dumps(data, option=orjson.OPT_INDENT_2)
-    output_file.write(json_str)
+    output_file.write(orjson.dumps(data, option=orjson.OPT_INDENT_2))
 
 
 @click.command()
@@ -714,6 +723,10 @@ def fetch_temples_data(
 @click.argument(
     'output-directory',
     type=click.Path(file_okay=False, dir_okay=True, writable=True)
+)
+@click.argument(
+    'output-list-file',
+    type=click.File(mode='wb')
 )
 @click.option(
     '--old-name', type=click.STRING,
@@ -740,10 +753,16 @@ def fetch_temples_data(
     default='',
     help='Prefix for temple pages'
 )
+@click.option(
+    '--truncated-suffix', type=click.STRING,
+    default='...',
+    help='Suffix for truncated page names'
+)
 def generate_temples_pages(
-    input_file: BinaryIO, output_directory: str,
+    input_file: BinaryIO, output_directory: str, output_list_file: BinaryIO,
     old_name: str, modern_name: str,
-    old_prefix: str, modern_prefix: str, temple_prefix: str
+    old_prefix: str, modern_prefix: str, temple_prefix: str,
+    truncated_suffix: str
 ) -> None:
     """Generate wiki-text pages for all temples."""
     output_directory_path = pathlib.Path(output_directory)
@@ -761,31 +780,37 @@ def generate_temples_pages(
             modern_index.add_temple(temple)
             old_index.add_temple(temple)
 
+    page_files: Dict[str, str] = {}
+    page_names: Set[str] = set()
+    page_number = 0
+
     with click.progressbar(
-        modern_index.generate_hierarchy_pages(
-            modern_prefix, temple_prefix, True
+        itertools.chain(
+            modern_index.generate_hierarchy_pages(
+                modern_prefix, temple_prefix, True, truncated_suffix
+            ),
+            old_index.generate_hierarchy_pages(
+                old_prefix, temple_prefix, False, truncated_suffix
+            )
         ),
         show_pos=True
     ) as bar2:
         for page_name, page_text in bar2:
+            if page_name in page_names:
+                raise ValueError(
+                    f'Truncated page name {page_name} is already present'
+                )
+            page_names.add(page_name)
             page_path = output_directory_path.joinpath(
-                pathlib.Path(page_name).with_suffix('.txt')
+                pathlib.Path(str(page_number)).with_suffix('.txt')
             )
+            page_number += 1
             page_path.parent.mkdir(parents=True, exist_ok=True)
+            page_files[str(page_path)] = page_name
 
             with open(page_path, mode='wt') as page_file:
                 page_file.write(page_text)
 
-    with click.progressbar(
-        old_index.generate_hierarchy_pages(
-            old_prefix, temple_prefix, False
-        ), show_pos=True
-    ) as bar2:
-        for page_name, page_text in bar2:
-            page_path = output_directory_path.joinpath(
-                pathlib.Path(page_name).with_suffix('.txt')
-            )
-            page_path.parent.mkdir(parents=True, exist_ok=True)
-
-            with open(page_path, mode='wt') as page_file:
-                page_file.write(page_text)
+    output_list_file.write(
+        orjson.dumps(page_files, option=orjson.OPT_INDENT_2)
+    )
