@@ -224,8 +224,8 @@ class Temple:
             kwargs['card_unparsed_field_names'] = set(
                 data['card_unparsed_field_names']
             )
-        card_data = data['card_fields']
         if 'card_fields' in data:
+            card_data = data['card_fields']
             if not isinstance(card_data, dict):
                 raise ValueError
             for field_name in Temple.OPTIONAL_CARD_STR_FIELDS:
