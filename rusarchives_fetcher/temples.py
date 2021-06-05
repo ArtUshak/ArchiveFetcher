@@ -203,7 +203,7 @@ class Temple:
                 if not isinstance(data[field_name], str):
                     raise ValueError()
                 kwargs[field_name] = data[field_name]
-        if 'card' in data:
+        if ('card' in data) and (data['card'] is not None):
             if not isinstance(data['card'], dict):
                 raise ValueError()
             for key, value in data['card'].items():
