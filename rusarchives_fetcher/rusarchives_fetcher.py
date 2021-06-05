@@ -6,7 +6,7 @@ from cfc_rusarchives import (fetch_search_results, generate_archive_pages,
                              list_search_results, load_spreadsheet_results,
                              rename_archives)
 from rusarchives import fetch_organization_data, list_organizations
-from temples import fetch_temples_data
+from temples import fetch_temples_data, generate_temples_pages
 
 
 @click.group()
@@ -27,6 +27,7 @@ cli.add_command(rename_archives)
 cli.add_command(load_spreadsheet_results)
 
 cli.add_command(fetch_temples_data)
+cli.add_command(generate_temples_pages)
 
 if __name__ == '__main__':
     cli()

@@ -151,7 +151,7 @@ def lxml_get_link_data(
             href and not (href.startswith('#'))
             and not href.startswith(('javascript:', 'mailto:'))
         ):
-            return href, link_element.text_content()
+            return href, str(link_element.text_content())
         else:
             return None
     except KeyError:
@@ -173,3 +173,24 @@ async def aiohttp_get(
         except aiohttp.ClientConnectionError:
             time.sleep(SLEEP_TIME_DISCONNECTED)
     raise ValueError('Max request try num exceeded')  # TODO
+
+
+def generate_wiki_template_text(name: str, parameters: Dict[str, str]) -> str:
+    """
+    Generate wikitext for template call with name and parameters.
+
+    Parameters should not contain unescaped '{', '}' or '|' characters,
+    otherwsie generated text can be incorrect.
+    """
+    result = '{{' + name
+    if len(parameters):
+        result += '\n'
+    for key, value in parameters.items():
+        result += f'| {key} = {value}\n'
+    result += '}}'
+    return result
+
+
+def generate_wiki_redirect_text(redirect_name: str) -> str:
+    """Generate wikitext for redirect."""
+    return f'#REDIRECT [[{redirect_name}]]'

@@ -1,18 +1,20 @@
 """Script to fetch data from temples.ru."""
 import asyncio
 import dataclasses
-import json
+import pathlib
 import re
-import sys
 import urllib.parse
-from typing import Awaitable, Dict, List, Optional, Set, TextIO, Tuple, Union
+from typing import (Any, Awaitable, BinaryIO, Dict, Iterator, List, Optional,
+                    Set, Tuple, Union)
 
 import aiohttp
 import click
+import orjson
 from lxml.etree import Element
 from lxml.html.soupparser import fromstring as soup_parse
 
-from utils import (aiohttp_get, lxml_get_link_data,
+from utils import (aiohttp_get, generate_wiki_redirect_text,
+                   generate_wiki_template_text, lxml_get_link_data,
                    lxml_iter_element_text_objects, strip_advanced)
 
 TEMPLES_ROOT_URL = 'http://www.temples.ru'
@@ -89,6 +91,23 @@ TempleData = Dict[
 class Temple:
     """Search result item."""
 
+    STR_FIELDS = ['name', 'town', 'construction_date']
+    OPTIONAL_STR_FIELDS = ['url']
+    OPTIONAL_CARD_STR_FIELDS = [
+        'card_name', 'card_type', 'card_construction_date',
+        'card_last_building_construction_date', 'card_architect',
+        'card_main_publication', 'card_historical_religion',
+        'card_current_religion', 'card_status', 'card_address',
+        'card_address_1917', 'card_description', 'card_notes',
+        'card_altar', 'card_web_url', 'card_email', 'card_phone',
+        'card_dedication', 'card_meta_date', 'card_meta_update_date',
+        'card_meta_author'
+    ]
+    OPTIONAL_CARD_LIST_STR_FIELDS = [
+        'card_name_synonyms', 'card_slang_names', 'card_architects',
+        'card_altars', 'card_hierarchy_old', 'card_hierarchy_modern'
+    ]
+
     temple_id: int
     name: str
     town: str
@@ -162,6 +181,96 @@ class Temple:
 
         return result
 
+    @staticmethod
+    def from_json_dict(data: Any) -> 'Temple':
+        """Create from data loaded from JSON."""
+        if not isinstance(data, dict):
+            raise ValueError()
+        kwargs: Dict[str, Any] = {}
+        if 'temple_id' in data:
+            if not isinstance(data['temple_id'], int):
+                raise ValueError()
+            kwargs['temple_id'] = data['temple_id']
+        for field_name in Temple.STR_FIELDS:
+            if field_name in data:
+                if not isinstance(data[field_name], str):
+                    raise ValueError()
+                kwargs[field_name] = data[field_name]
+            else:
+                raise ValueError()
+        for field_name in Temple.OPTIONAL_STR_FIELDS:
+            if field_name in data:
+                if not isinstance(data[field_name], str):
+                    raise ValueError()
+                kwargs[field_name] = data[field_name]
+        if 'card' in data:
+            if not isinstance(data['card'], dict):
+                raise ValueError()
+            for key, value in data['card'].items():
+                if not isinstance(key, str):
+                    raise ValueError()
+                if not isinstance(value, list):
+                    raise ValueError()
+                for element in value:
+                    if not isinstance(element, str):
+                        raise ValueError()
+            kwargs['card_data'] = data['card']
+        if 'card_unparsed_field_names' in data:
+            if not isinstance(data['card_unparsed_field_names'], list):
+                raise ValueError()
+            for element in data['card_unparsed_field_names']:
+                if not isinstance(element, str):
+                    raise ValueError()
+            kwargs['card_unparsed_field_names'] = set(
+                data['card_unparsed_field_names']
+            )
+        card_data = data['card_fields']
+        if 'card_fields' in data:
+            if not isinstance(card_data, dict):
+                raise ValueError
+            for field_name in Temple.OPTIONAL_CARD_STR_FIELDS:
+                if field_name in card_data:
+                    if not isinstance(
+                        card_data[field_name], str
+                    ):
+                        raise ValueError()
+                    kwargs[field_name] = card_data[field_name]
+            for field_name in Temple.OPTIONAL_CARD_LIST_STR_FIELDS:
+                if field_name in card_data:
+                    if not isinstance(
+                        card_data[field_name], list
+                    ):
+                        raise ValueError()
+                    for element in card_data[field_name]:
+                        if not isinstance(element, str):
+                            raise ValueError()
+                    kwargs[field_name] = card_data[field_name]
+            if 'card_location' in card_data:
+                if not isinstance(card_data['card_location'], dict):
+                    raise ValueError()
+                if 'longitude' not in card_data['card_location']:
+                    raise ValueError()
+                longitude_raw = card_data['card_location']['longitude']
+                longitude: float
+                if isinstance(longitude_raw, str):
+                    longitude = float(longitude_raw)
+                elif isinstance(longitude_raw, float):
+                    longitude = longitude_raw
+                else:
+                    raise ValueError()
+                if 'latitude' not in card_data['card_location']:
+                    raise ValueError()
+                latitude_raw = card_data['card_location']['latitude']
+                latitude: float
+                if isinstance(latitude_raw, str):
+                    latitude = float(latitude_raw)
+                elif isinstance(latitude_raw, float):
+                    latitude = latitude_raw
+                else:
+                    raise ValueError()
+                kwargs['card_location'] = longitude, latitude
+        return Temple(**kwargs)
+
     def parse_location(
         self, element: Element
     ) -> Optional[Tuple[float, float]]:
@@ -184,7 +293,7 @@ class Temple:
         )
         if location_match is None:
             return None
-        return (location_match.group(1), location_match.group(2))
+        return float(location_match.group(1)), float(location_match.group(2))
 
     def parse_hierarchy(
         self, element: Element
@@ -316,6 +425,179 @@ class Temple:
         self.card_unparsed_field_names = card_unparsed_field_names
         counter.increment()
 
+    def get_name(self) -> str:
+        """Return temple name using `card_name` or `name` field."""
+        return self.card_name or self.name
+
+    def get_page_name_modern(self) -> Optional[str]:
+        """Return page name generated using modern hierarchy."""
+        if self.card_hierarchy_modern is not None:
+            return '/'.join(
+                self.card_hierarchy_modern + [self.get_name()]
+            )
+        else:
+            return None
+
+    def get_page_name_old(self) -> Optional[str]:
+        """Return page name generated using old (pre-1917) hierarchy."""
+        if self.card_hierarchy_old is not None:
+            return '/'.join(
+                self.card_hierarchy_old + [self.get_name()]
+            )
+        else:
+            return None
+
+    def get_page_text(self) -> str:
+        """Return generated page wikitext for temple."""
+        template_parameters: Dict[str, str] = {}
+        for field_name in self.STR_FIELDS:
+            if field_name == 'construction_date':
+                continue
+            field_value = getattr(self, field_name)
+            template_parameters[field_name] = field_value
+        for field_name in self.OPTIONAL_STR_FIELDS:
+            field_value = getattr(self, field_name)
+            if field_value is not None:
+                template_parameters[field_name] = field_value
+        for field_name in self.OPTIONAL_CARD_STR_FIELDS:
+            field_value = getattr(self, field_name)
+            if field_value is not None:
+                template_parameters[field_name] = field_value
+        for field_name in self.OPTIONAL_CARD_LIST_STR_FIELDS:
+            field_value = getattr(self, field_name)
+            if field_value is not None:
+                for i in range(len(field_value)):
+                    template_parameters[field_name + str(i)] = field_value[i]
+        if self.card_location is not None:
+            template_parameters['longitude'] = str(self.card_location[0])
+            template_parameters['latitude'] = str(self.card_location[1])
+
+        return generate_wiki_template_text(
+            'Храм', template_parameters
+        )
+
+
+class HierarchyIndex:
+    """Hierarchical index of temples."""
+
+    is_old: bool
+    name: str
+    parent: Optional['HierarchyIndex'] = None
+    child_temples: Dict[str, Temple] = {}
+    child_indices: Dict[str, 'HierarchyIndex'] = {}
+
+    def __init__(
+        self, is_old: bool, name: str,
+        parent: Optional['HierarchyIndex'] = None
+    ):
+        """Initialize."""
+        self.is_old = is_old
+        self.name = name
+        self.parent = parent
+        self.child_temples = {}
+        self.child_indices = {}
+
+    def _add_temple_recursive(
+        self, temple: Temple, hierarchy: List[str]
+    ) -> None:
+        if not len(hierarchy):
+            name = temple.get_name()
+            if name in self.child_temples:
+                raise ValueError()  # TODO
+            if name in self.child_indices:
+                raise ValueError()  # TODO
+            self.child_temples[name] = temple
+        else:
+            top_name = hierarchy[0]
+            if top_name in self.child_temples:
+                raise ValueError()  # TODO
+            index: HierarchyIndex
+            if top_name in self.child_indices:
+                index = self.child_indices[top_name]
+            else:
+                index = HierarchyIndex(
+                    is_old=self.is_old, parent=self, name=top_name
+                )
+                self.child_indices[top_name] = index
+            index._add_temple_recursive(temple, hierarchy[1:])
+
+    def add_temple(self, temple: Temple) -> None:
+        """Add temple using old (pre-1917) or modern hiearchy."""
+        hierarchy: Optional[List[str]]
+        if self.is_old:
+            hierarchy = temple.card_hierarchy_old
+        else:
+            hierarchy = temple.card_hierarchy_modern
+        if hierarchy is None:
+            return
+        self._add_temple_recursive(temple, hierarchy)
+
+    def get_page_text(self, prefix: str) -> str:
+        """Return generated page wikitext for index."""
+        template_parameters = {
+            'old': str(int(self.is_old)),
+            'name': self.name
+        }
+        result = generate_wiki_template_text(
+            'Иерархия', template_parameters
+        ) + '\n'
+        if len(self.child_indices):
+            result += '\n== Регионы ==\n\n' + '\n'.join(list(map(
+                lambda child_index:
+                f'* [[/{child_index.name}|{child_index.name}]]',
+                self.child_indices.values()
+            ))) + '\n'
+        if len(self.child_temples):
+            result += '\n== Храмы ==\n\n' + '\n'.join(list(map(
+                lambda child_temple:
+                f'* [[/{child_temple.get_name()}|{child_temple.get_name()}]]',
+                self.child_temples.values()
+            ))) + '\n'
+        return result
+
+    def generate_hierarchy_pages(
+        self, prefix: str, redirect_prefix: Optional[str] = None
+    ) -> Iterator[Tuple[str, str]]:
+        """
+        Iterate over tuple of page names and texts.
+
+        Both subindices and temples are returned.
+
+        If `redirect_prefix` is not `None`, redirects are generated for
+        temples instead of page texts.
+        """
+        yield (
+            prefix + self.name,
+            self.get_page_text(prefix)
+        )
+        new_prefix = prefix + self.name + '/'
+        for temple in self.child_temples.values():
+            if redirect_prefix is not None:
+                if self.is_old:
+                    hierachy_other = temple.card_hierarchy_modern
+                else:
+                    hierachy_other = temple.card_hierarchy_old
+                if hierachy_other is not None:
+                    yield (
+                        new_prefix + temple.get_name(),
+                        generate_wiki_redirect_text(
+                            redirect_prefix
+                            + '/'.join(hierachy_other)
+                        )
+                    )
+            else:
+                page_text = temple.get_page_text()
+                if page_text is not None:
+                    yield (
+                        new_prefix + temple.get_name(),
+                        page_text
+                    )
+        for child_index in self.child_indices.values():
+            for page_name, page_text in child_index.generate_hierarchy_pages(
+                new_prefix, redirect_prefix
+            ):
+                yield page_name, page_text
+
 
 async def list_temples(
     region_id: int, session: aiohttp.ClientSession, counter: TempleCounter
@@ -407,8 +689,8 @@ async def fetch_temples_data_internal(
 
 
 @click.command()
-@click.option(
-    '--output-file', type=click.File(mode='wt')
+@click.argument(
+    'output-file', type=click.File(mode='wb')
 )
 @click.option(
     '--start-region-index', type=click.IntRange(min=0),
@@ -430,7 +712,7 @@ async def fetch_temples_data_internal(
     help='Interval to display temples counter (for example, each 10 temples)'
 )
 def fetch_temples_data(
-    output_file: Optional[TextIO],
+    output_file: BinaryIO,
     start_region_index: int, end_region_index: int,
     connection_limit: int, counter_display_interval: int
 ) -> None:
@@ -440,6 +722,81 @@ def fetch_temples_data(
         counter_display_interval
     ))
 
-    if output_file is None:
-        output_file = sys.stdout
-    json.dump(data, output_file, ensure_ascii=False, indent=4)
+    json_str = orjson.dumps(data, option=orjson.OPT_INDENT_2)
+    output_file.write(json_str)
+
+
+@click.command()
+@click.argument(
+    'input-file',
+    type=click.File(mode='rb')
+)
+@click.argument(
+    'output-directory',
+    type=click.Path(file_okay=False, dir_okay=True, writable=True)
+)
+@click.option(
+    '--old-name', type=click.STRING,
+    default='Храмы (деление до 1917 года)',
+    help='Old hierarchy root name'
+)
+@click.option(
+    '--modern-name', type=click.STRING,
+    default='Храмы',
+    help='Modern hiearchy root name'
+)
+@click.option(
+    '--old-prefix', type=click.STRING,
+    default='',
+    help='Prefix for old hierarchy pages'
+)
+@click.option(
+    '--modern-prefix', type=click.STRING,
+    default='',
+    help='Prefix for modern hierarchy pages'
+)
+def generate_temples_pages(
+    input_file: BinaryIO, output_directory: str,
+    old_name: str, modern_name: str, old_prefix: str, modern_prefix: str
+) -> None:
+    """Generate wiki-text pages for all temples."""
+    output_directory_path = pathlib.Path(output_directory)
+    data = orjson.loads(input_file.read())
+
+    temples: List[Temple] = []
+    for region_data in data.values():
+        for element in region_data['temples']:
+            temples.append(Temple.from_json_dict(element))
+
+    modern_index = HierarchyIndex(False, modern_name)
+    old_index = HierarchyIndex(True, old_name)
+    with click.progressbar(temples, show_pos=True) as bar1:
+        for temple in bar1:
+            modern_index.add_temple(temple)
+            old_index.add_temple(temple)
+
+    with click.progressbar(
+        modern_index.generate_hierarchy_pages(modern_prefix), show_pos=True
+    ) as bar2:
+        for page_name, page_text in bar2:
+            page_path = output_directory_path.joinpath(
+                pathlib.Path(page_name).with_suffix('.txt')
+            )
+            page_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(page_path, mode='wt') as page_file:
+                page_file.write(page_text)
+
+    with click.progressbar(
+        old_index.generate_hierarchy_pages(
+            old_prefix, redirect_prefix=modern_prefix + modern_index.name + '/'
+        ), show_pos=True
+    ) as bar2:
+        for page_name, page_text in bar2:
+            page_path = output_directory_path.joinpath(
+                pathlib.Path(page_name).with_suffix('.txt')
+            )
+            page_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(page_path, mode='wt') as page_file:
+                page_file.write(page_text)
