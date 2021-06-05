@@ -503,9 +503,9 @@ class HierarchyIndex:
         if not len(hierarchy):
             name = temple.get_name()
             if name in self.child_temples:
-                raise ValueError()  # TODO
+                return  # TODO
             if name in self.child_indices:
-                raise ValueError()  # TODO
+                return  # TODO
             self.child_temples[name] = temple
         else:
             top_name = hierarchy[0]
