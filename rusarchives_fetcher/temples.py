@@ -29,8 +29,8 @@ DictList2 = List[Dict[str, Union[str, DictList1]]]
 
 
 @dataclasses.dataclass
-class TempleCounter:
-    """Counter of fetched temples."""
+class Counter:
+    """Counter."""
 
     display_interval: int
     temple_count: int = 0
@@ -39,7 +39,7 @@ class TempleCounter:
         """Increment count."""
         self.temple_count += 1
         if (self.temple_count % self.display_interval) == 0:
-            click.echo(f'Processed temples: {self.temple_count}')
+            click.echo(f'Processed count: {self.temple_count}')
 
 
 async def get_region_ids(
@@ -309,7 +309,7 @@ class Temple:
         return result
 
     async def fetch_card(
-        self, session: aiohttp.ClientSession, counter: TempleCounter
+        self, session: aiohttp.ClientSession, counter: Counter
     ) -> None:
         """Fetch card data using URL."""
         if self.url is None:
@@ -430,6 +430,12 @@ class Temple:
         """Return temple name using `card_name` or `name` field."""
         return self.card_name or self.name
 
+    def get_truncated_name(self, temple_prefix: str) -> str:
+        """Return truncated name with ID."""
+        return trunc_str_bytes(
+            temple_prefix + self.get_name(), 224
+        ) + ' (' + str(self.temple_id) + ')'
+
     def get_page_name_modern(self) -> Optional[str]:
         """Return page name generated using modern hierarchy."""
         if self.card_hierarchy_modern is not None:
@@ -530,7 +536,7 @@ class HierarchyIndex:
         self._add_temple_recursive(temple, hierarchy)
 
     def get_page_text(
-        self, prefix: str, temple_prefix: str, truncated_suffix: str
+        self, prefix: str, temple_prefix: str
     ) -> str:
         """Return generated page wikitext for index."""
         template_parameters = {
@@ -549,17 +555,14 @@ class HierarchyIndex:
         if len(self.child_temples):
             result += '\n== Храмы ==\n\n' + '\n'.join(list(map(
                 lambda child_temple:
-                '* [[' + trunc_str_bytes(
-                    temple_prefix + child_temple.get_name(), 255,
-                    truncated_suffix
-                ) + ']]',
+                '* [[' + child_temple.get_truncated_name(temple_prefix) + '|'
+                + child_temple.get_name() + ']]',
                 self.child_temples.values()
             ))) + '\n'
         return result
 
     def generate_hierarchy_pages(
-        self, prefix: str, temple_prefix: str, generate_temples: bool,
-        truncated_suffix: str
+        self, prefix: str, temple_prefix: str, generate_temples: bool
     ) -> Iterator[Tuple[str, str]]:
         """
         Iterate over tuple of page names and texts.
@@ -568,7 +571,7 @@ class HierarchyIndex:
         """
         yield (
             prefix + self.name,
-            self.get_page_text(prefix, temple_prefix, truncated_suffix)
+            self.get_page_text(prefix, temple_prefix)
         )
         new_prefix = prefix + self.name + '/'
         for temple in self.child_temples.values():
@@ -576,21 +579,18 @@ class HierarchyIndex:
                 page_text = temple.get_page_text()
                 if page_text is not None:
                     yield (
-                        trunc_str_bytes(
-                            temple_prefix + temple.get_name(), 255,
-                            truncated_suffix
-                        ),
+                        temple.get_truncated_name(temple_prefix),
                         page_text
                     )
         for child_index in self.child_indices.values():
             for page_name, page_text in child_index.generate_hierarchy_pages(
-                new_prefix, temple_prefix, generate_temples, truncated_suffix
+                new_prefix, temple_prefix, generate_temples
             ):
                 yield page_name, page_text
 
 
 async def list_temples(
-    region_id: int, session: aiohttp.ClientSession, counter: TempleCounter
+    region_id: int, session: aiohttp.ClientSession, counter: Counter
 ) -> List[Temple]:
     """Return list of over region temples."""
     url = TEMPLES_BRANCH_URL
@@ -633,7 +633,7 @@ async def list_temples(
 
 async def process_region(
     region: Tuple[int, str], session: aiohttp.ClientSession,
-    counter: TempleCounter
+    counter: Counter
 ) -> Tuple[str, Dict[str, Union[str, int, List[TempleData]]]]:
     """
     Fetch region temples data asynchronously.
@@ -659,7 +659,7 @@ async def fetch_temples_data_internal(
 ) -> Dict[str, Dict[str, Union[str, int, List[TempleData]]]]:
     """Fetch temples asynchronously."""
     connector = aiohttp.connector.TCPConnector(limit=connection_limit)
-    counter = TempleCounter(counter_display_interval)
+    counter = Counter(counter_display_interval)
     timeout = aiohttp.ClientTimeout(total=None)
 
     async with aiohttp.ClientSession(
@@ -753,16 +753,10 @@ def fetch_temples_data(
     default='',
     help='Prefix for temple pages'
 )
-@click.option(
-    '--truncated-suffix', type=click.STRING,
-    default='...',
-    help='Suffix for truncated page names'
-)
 def generate_temples_pages(
     input_file: BinaryIO, output_directory: str, output_list_file: BinaryIO,
     old_name: str, modern_name: str,
-    old_prefix: str, modern_prefix: str, temple_prefix: str,
-    truncated_suffix: str
+    old_prefix: str, modern_prefix: str, temple_prefix: str
 ) -> None:
     """Generate wiki-text pages for all temples."""
     output_directory_path = pathlib.Path(output_directory)
@@ -787,10 +781,10 @@ def generate_temples_pages(
     with click.progressbar(
         itertools.chain(
             modern_index.generate_hierarchy_pages(
-                modern_prefix, temple_prefix, True, truncated_suffix
+                modern_prefix, temple_prefix, True
             ),
             old_index.generate_hierarchy_pages(
-                old_prefix, temple_prefix, False, truncated_suffix
+                old_prefix, temple_prefix, False
             )
         ),
         show_pos=True
