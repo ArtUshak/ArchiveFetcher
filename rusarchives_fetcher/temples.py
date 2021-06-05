@@ -13,9 +13,9 @@ import orjson
 from lxml.etree import Element
 from lxml.html.soupparser import fromstring as soup_parse
 
-from utils import (aiohttp_get, generate_wiki_redirect_text,
-                   generate_wiki_template_text, lxml_get_link_data,
-                   lxml_iter_element_text_objects, strip_advanced)
+from utils import (aiohttp_get, generate_wiki_template_text,
+                   lxml_get_link_data, lxml_iter_element_text_objects,
+                   strip_advanced)
 
 TEMPLES_ROOT_URL = 'http://www.temples.ru'
 TEMPLES_TREE_URL = TEMPLES_ROOT_URL + '/tree.php'
@@ -504,13 +504,9 @@ class HierarchyIndex:
             name = temple.get_name()
             if name in self.child_temples:
                 return  # TODO
-            if name in self.child_indices:
-                return  # TODO
             self.child_temples[name] = temple
         else:
             top_name = hierarchy[0]
-            if top_name in self.child_temples:
-                raise ValueError()  # TODO
             index: HierarchyIndex
             if top_name in self.child_indices:
                 index = self.child_indices[top_name]
@@ -532,7 +528,7 @@ class HierarchyIndex:
             return
         self._add_temple_recursive(temple, hierarchy)
 
-    def get_page_text(self, prefix: str) -> str:
+    def get_page_text(self, prefix: str, temple_prefix: str) -> str:
         """Return generated page wikitext for index."""
         template_parameters = {
             'old': str(int(self.is_old)),
@@ -550,51 +546,35 @@ class HierarchyIndex:
         if len(self.child_temples):
             result += '\n== Храмы ==\n\n' + '\n'.join(list(map(
                 lambda child_temple:
-                f'* [[/{child_temple.get_name()}|{child_temple.get_name()}]]',
+                f'* [[{temple_prefix}{child_temple.get_name()}]]',
                 self.child_temples.values()
             ))) + '\n'
         return result
 
     def generate_hierarchy_pages(
-        self, prefix: str, redirect_prefix: Optional[str] = None
+        self, prefix: str, temple_prefix: str, generate_temples: bool
     ) -> Iterator[Tuple[str, str]]:
         """
         Iterate over tuple of page names and texts.
 
         Both subindices and temples are returned.
-
-        If `redirect_prefix` is not `None`, redirects are generated for
-        temples instead of page texts.
         """
         yield (
             prefix + self.name,
-            self.get_page_text(prefix)
+            self.get_page_text(prefix, temple_prefix)
         )
         new_prefix = prefix + self.name + '/'
         for temple in self.child_temples.values():
-            if redirect_prefix is not None:
-                if self.is_old:
-                    hierachy_other = temple.card_hierarchy_modern
-                else:
-                    hierachy_other = temple.card_hierarchy_old
-                if hierachy_other is not None:
-                    yield (
-                        new_prefix + temple.get_name(),
-                        generate_wiki_redirect_text(
-                            redirect_prefix
-                            + '/'.join(hierachy_other)
-                        )
-                    )
-            else:
+            if generate_temples:
                 page_text = temple.get_page_text()
                 if page_text is not None:
                     yield (
-                        new_prefix + temple.get_name(),
+                        temple_prefix + temple.get_name(),
                         page_text
                     )
         for child_index in self.child_indices.values():
             for page_name, page_text in child_index.generate_hierarchy_pages(
-                new_prefix, redirect_prefix
+                new_prefix, temple_prefix, generate_temples
             ):
                 yield page_name, page_text
 
@@ -755,9 +735,15 @@ def fetch_temples_data(
     default='',
     help='Prefix for modern hierarchy pages'
 )
+@click.option(
+    '--temple-prefix', type=click.STRING,
+    default='',
+    help='Prefix for temple pages'
+)
 def generate_temples_pages(
     input_file: BinaryIO, output_directory: str,
-    old_name: str, modern_name: str, old_prefix: str, modern_prefix: str
+    old_name: str, modern_name: str,
+    old_prefix: str, modern_prefix: str, temple_prefix: str
 ) -> None:
     """Generate wiki-text pages for all temples."""
     output_directory_path = pathlib.Path(output_directory)
@@ -776,7 +762,10 @@ def generate_temples_pages(
             old_index.add_temple(temple)
 
     with click.progressbar(
-        modern_index.generate_hierarchy_pages(modern_prefix), show_pos=True
+        modern_index.generate_hierarchy_pages(
+            modern_prefix, temple_prefix, True
+        ),
+        show_pos=True
     ) as bar2:
         for page_name, page_text in bar2:
             page_path = output_directory_path.joinpath(
@@ -789,7 +778,7 @@ def generate_temples_pages(
 
     with click.progressbar(
         old_index.generate_hierarchy_pages(
-            old_prefix, redirect_prefix=modern_prefix + modern_index.name + '/'
+            old_prefix, temple_prefix, False
         ), show_pos=True
     ) as bar2:
         for page_name, page_text in bar2:
