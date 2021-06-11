@@ -433,7 +433,7 @@ class Temple:
     def get_truncated_name(self, temple_prefix: str) -> str:
         """Return truncated name with ID."""
         return trunc_str_bytes(
-            temple_prefix + self.get_name(), 200, om='...'
+            temple_prefix + self.get_name(), 224, om='...'
         ) + ' (' + str(self.temple_id) + ')'
 
     def get_page_text(self) -> str:
