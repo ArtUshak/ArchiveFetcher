@@ -173,8 +173,8 @@ class Temple:
                         card_fields[field_name] = field_value
         if self.card_location is not None:
             card_fields['card_location'] = {
-                'longitude': self.card_location[0],
-                'latitude': self.card_location[1],
+                'latitude': self.card_location[0],
+                'longitude': self.card_location[1],
             }
 
         if len(card_fields):
@@ -249,16 +249,6 @@ class Temple:
             if 'card_location' in card_data:
                 if not isinstance(card_data['card_location'], dict):
                     raise ValueError()
-                if 'longitude' not in card_data['card_location']:
-                    raise ValueError()
-                longitude_raw = card_data['card_location']['longitude']
-                longitude: float
-                if isinstance(longitude_raw, str):
-                    longitude = float(longitude_raw)
-                elif isinstance(longitude_raw, float):
-                    longitude = longitude_raw
-                else:
-                    raise ValueError()
                 if 'latitude' not in card_data['card_location']:
                     raise ValueError()
                 latitude_raw = card_data['card_location']['latitude']
@@ -269,7 +259,17 @@ class Temple:
                     latitude = latitude_raw
                 else:
                     raise ValueError()
-                kwargs['card_location'] = longitude, latitude
+                if 'longitude' not in card_data['card_location']:
+                    raise ValueError()
+                longitude_raw = card_data['card_location']['longitude']
+                longitude: float
+                if isinstance(longitude_raw, str):
+                    longitude = float(longitude_raw)
+                elif isinstance(longitude_raw, float):
+                    longitude = longitude_raw
+                else:
+                    raise ValueError()
+                kwargs['card_location'] = latitude, longitude
         return Temple(**kwargs)
 
     def parse_location(
@@ -458,8 +458,8 @@ class Temple:
                 for i in range(len(field_value)):
                     template_parameters[field_name + str(i)] = field_value[i]
         if self.card_location is not None:
-            template_parameters['longitude'] = str(self.card_location[0])
-            template_parameters['latitude'] = str(self.card_location[1])
+            template_parameters['latitude'] = str(self.card_location[0])
+            template_parameters['longitude'] = str(self.card_location[1])
 
         return generate_wiki_template_text(
             'Храм', template_parameters
