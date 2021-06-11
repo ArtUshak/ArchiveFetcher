@@ -436,24 +436,6 @@ class Temple:
             temple_prefix + self.get_name(), 200, om='...'
         ) + ' (' + str(self.temple_id) + ')'
 
-    def get_page_name_modern(self) -> Optional[str]:
-        """Return page name generated using modern hierarchy."""
-        if self.card_hierarchy_modern is not None:
-            return '/'.join(
-                self.card_hierarchy_modern + [self.get_truncated_name()]
-            )
-        else:
-            return None
-
-    def get_page_name_old(self) -> Optional[str]:
-        """Return page name generated using old (pre-1917) hierarchy."""
-        if self.card_hierarchy_old is not None:
-            return '/'.join(
-                self.card_hierarchy_old + [self.get_truncated_name()]
-            )
-        else:
-            return None
-
     def get_page_text(self) -> str:
         """Return generated page wikitext for temple."""
         template_parameters: Dict[str, str] = {}
