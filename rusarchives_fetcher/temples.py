@@ -440,7 +440,7 @@ class Temple:
         """Return page name generated using modern hierarchy."""
         if self.card_hierarchy_modern is not None:
             return '/'.join(
-                self.card_hierarchy_modern + [self.get_name()]
+                self.card_hierarchy_modern + [self.get_truncated_name()]
             )
         else:
             return None
@@ -449,7 +449,7 @@ class Temple:
         """Return page name generated using old (pre-1917) hierarchy."""
         if self.card_hierarchy_old is not None:
             return '/'.join(
-                self.card_hierarchy_old + [self.get_name()]
+                self.card_hierarchy_old + [self.get_truncated_name()]
             )
         else:
             return None
