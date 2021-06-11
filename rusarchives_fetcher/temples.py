@@ -502,6 +502,7 @@ class HierarchyIndex:
         self.is_old = is_old
         self.name = name
         self.parent = parent
+        self.strip_in_brackets = strip_in_brackets
         self.child_temples = {}
         self.child_indices = {}
 
