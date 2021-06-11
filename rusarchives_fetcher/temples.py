@@ -433,7 +433,7 @@ class Temple:
     def get_truncated_name(self, temple_prefix: str) -> str:
         """Return truncated name with ID."""
         return trunc_str_bytes(
-            temple_prefix + self.get_name(), 224
+            temple_prefix + self.get_name(), 200, om='...'
         ) + ' (' + str(self.temple_id) + ')'
 
     def get_page_name_modern(self) -> Optional[str]:
@@ -489,12 +489,13 @@ class HierarchyIndex:
 
     is_old: bool
     name: str
+    strip_in_brackets: bool
     parent: Optional['HierarchyIndex'] = None
     child_temples: Dict[str, Temple] = {}
     child_indices: Dict[str, 'HierarchyIndex'] = {}
 
     def __init__(
-        self, is_old: bool, name: str,
+        self, is_old: bool, name: str, strip_in_brackets: bool,
         parent: Optional['HierarchyIndex'] = None
     ):
         """Initialize."""
@@ -514,12 +515,17 @@ class HierarchyIndex:
             self.child_temples[name] = temple
         else:
             top_name = hierarchy[0]
+            if self.strip_in_brackets:
+                top_name = top_name.split(' (')[0].strip()
             index: HierarchyIndex
             if top_name in self.child_indices:
                 index = self.child_indices[top_name]
             else:
                 index = HierarchyIndex(
-                    is_old=self.is_old, parent=self, name=top_name
+                    is_old=self.is_old,
+                    name=top_name,
+                    strip_in_brackets=self.strip_in_brackets,
+                    parent=self
                 )
                 self.child_indices[top_name] = index
             index._add_temple_recursive(temple, hierarchy[1:])
@@ -730,7 +736,7 @@ def fetch_temples_data(
 )
 @click.option(
     '--old-name', type=click.STRING,
-    default='Храмы (деление до 1917 года)',
+    default='Храмы (до 1917)',
     help='Old hierarchy root name'
 )
 @click.option(
@@ -753,10 +759,16 @@ def fetch_temples_data(
     default='',
     help='Prefix for temple pages'
 )
+@click.option(
+    '--strip-in-brackets/--no-strip-in-brackets',
+    default=True,
+    help='Strip text starting with first bracket from hierarchy names'
+)
 def generate_temples_pages(
     input_file: BinaryIO, output_directory: str, output_list_file: BinaryIO,
     old_name: str, modern_name: str,
-    old_prefix: str, modern_prefix: str, temple_prefix: str
+    old_prefix: str, modern_prefix: str, temple_prefix: str,
+    strip_in_brackets: bool
 ) -> None:
     """Generate wiki-text pages for all temples."""
     output_directory_path = pathlib.Path(output_directory)
@@ -767,8 +779,12 @@ def generate_temples_pages(
         for element in region_data['temples']:
             temples.append(Temple.from_json_dict(element))
 
-    modern_index = HierarchyIndex(False, modern_name)
-    old_index = HierarchyIndex(True, old_name)
+    modern_index = HierarchyIndex(
+        is_old=False, name=modern_name, strip_in_brackets=strip_in_brackets
+    )
+    old_index = HierarchyIndex(
+        is_old=True, name=old_name, strip_in_brackets=strip_in_brackets
+    )
     with click.progressbar(temples, show_pos=True) as bar1:
         for temple in bar1:
             modern_index.add_temple(temple)
@@ -793,6 +809,10 @@ def generate_temples_pages(
             if page_name in page_names:
                 raise ValueError(
                     f'Truncated page name {page_name} is already present'
+                )
+            if len(page_name.encode('utf-8')) > 255:
+                raise ValueError(
+                    f'Page name {page_name} is too long'
                 )
             page_names.add(page_name)
             page_path = output_directory_path.joinpath(
